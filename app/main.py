@@ -1,4 +1,9 @@
+import warnings
 from dotenv import load_dotenv
+
+# Suppress Pydantic V1 compatibility warning
+warnings.filterwarnings("ignore", message=".*Pydantic V1 functionality.*")
+
 load_dotenv()
 
 from fastapi import FastAPI

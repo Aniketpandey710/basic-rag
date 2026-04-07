@@ -3,12 +3,14 @@ from pydantic import BaseModel
 
 class IngestResponse(BaseModel):
     filename: str
+    request_id: str
     message: str
     status: str = "success"
     chunks_created: int
 
 class QueryRequest(BaseModel):
     question: str
+    request_id: str
     top_k: Optional[int] = 3  # Number of document chunks to retrieve
 
 class QueryResponse(BaseModel):
