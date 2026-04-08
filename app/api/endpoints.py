@@ -1,6 +1,7 @@
 import os
 import shutil
 import uuid
+import asyncio
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from app.models.schema import IngestResponse, QueryRequest, QueryResponse
 from app.services.rag_services import rag_service
@@ -14,8 +15,8 @@ def health_check():
 
 @router.post("/ingest", response_model=IngestResponse)
 def ingest_data(file: UploadFile = File(...)):
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    if not file.filename.endswith(('.pdf', '.docx')):
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported.")
     
     tmp_file_name = f"data/{file.filename}"
 
@@ -30,8 +31,8 @@ def ingest_data(file: UploadFile = File(...)):
         # Generate request ID
         request_id = uuid.uuid4().hex
         
-        # Process PDF and create chunks
-        num_chunks = rag_service.process_pdf(tmp_file_name, request_id)
+        # Process file and create chunks
+        num_chunks = rag_service.process_file(tmp_file_name, request_id)
         
         # Delete the local file after processing
         os.remove(tmp_file_name)
@@ -87,18 +88,39 @@ def get_chunks(request_id: str, limit: int = 10):
     
 @router.post("/search",response_model=QueryResponse)
 async def search_chunks(payload: QueryRequest):
-    try:
-        # Call the RAG service to get the answer
-        result = await rag_service.answer_question(
-            payload.question, 
-            payload.top_k,
-            request_id=payload.request_id
-        )
-        
-        return QueryResponse(
-            question=payload.question,
-            answer=result["answer"],
-            sources=result["sources"]
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+    """Search RAG with retry logic for API rate limits"""
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            # Call the RAG service to get the answer
+            result = await rag_service.answer_question(
+                payload.question, 
+                payload.top_k,
+                request_id=payload.request_id
+            )
+            
+            return QueryResponse(
+                question=payload.question,
+                answer=result["answer"],
+                sources=result["sources"]
+            )
+        except Exception as e:
+            error_msg = str(e)
+            
+            # Check if it's a rate limit error (503)
+            if "503" in error_msg or "UNAVAILABLE" in error_msg:
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"⚠️  API unavailable. Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Google Gemini API is currently unavailable. Please try again in a few minutes."
+                    )
+            else:
+                # For other errors, fail immediately
+                raise HTTPException(status_code=500, detail=f"Search failed: {error_msg}")
